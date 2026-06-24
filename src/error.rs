@@ -106,7 +106,8 @@ impl From<ModelError> for io::Error {
 
 /// A negative optimisation outcome: the solve ran but produced no usable solution.
 ///
-/// Returned (wrapped in [`SolveError::NoSolution`]) instead of an [`LPSolution`], so a
+/// Returned (wrapped in [`SolveError::NoSolution`]) instead of an
+/// [`LPSolution`](crate::LPSolution), so a
 /// successful `Ok` always carries a usable solution and callers need not inspect a status
 /// to tell success from failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

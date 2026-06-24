@@ -216,6 +216,8 @@
 //! ./your_program
 //! ```
 
+#![warn(missing_docs)]
+
 use std::env;
 use std::marker::PhantomData;
 
@@ -769,9 +771,11 @@ pub mod macros;
 // Operator overloading for linear expressions
 pub mod ops;
 
+/// Gurobi backend: the `solve_gurobi` entry point used by [`LPModelBuilder::solve`].
 #[cfg(feature = "gurobi")]
 pub mod gurobi;
 
+/// COIN-OR CBC backend: the `solve_coin_cbc` entry point used by [`LPModelBuilder::solve`].
 #[cfg(feature = "coin_cbc")]
 pub mod coin_cbc;
 
