@@ -107,12 +107,14 @@ pub fn solve_coin_cbc<Brand>(
     // error; only a usable solution (optimal, or a feasible incumbent from an early stop)
     // proceeds to value extraction.
     let raw = solution.raw();
+    // Check unboundedness before infeasibility: CBC can report an unbounded model as
+    // "proven infeasible", so the unbounded test must win when both are set.
     let status = if raw.is_proven_optimal() {
         SolutionStatus::Optimal
-    } else if raw.is_proven_infeasible() {
-        return Err(NoSolution::Infeasible.into());
     } else if raw.is_continuous_unbounded() {
         return Err(NoSolution::Unbounded.into());
+    } else if raw.is_proven_infeasible() {
+        return Err(NoSolution::Infeasible.into());
     } else if raw.secondary_status() == SecondaryStatus::HasSolution {
         // The solve stopped early (a limit or user event) but a feasible incumbent is available.
         SolutionStatus::Feasible

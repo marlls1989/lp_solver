@@ -29,10 +29,14 @@ on Debian/Ubuntu).
 ## Architecture
 
 - `src/lib.rs` — crate root. The core types: `LPModelBuilder<Brand>`,
-  `VariableId<Brand>`, `LinearExpression<Brand>`, `Constraint<Brand>`,
+  `VariableId<Brand>`, `ConstraintId`, `LinearExpression<Brand>`, `Constraint<Brand>`,
   `LPSolution<Brand>`, the public enums (`VariableType`, `ConstraintSense`,
-  `OptimisationSense`, `OptimisationStatus`), and the `solve()` dispatch /
-  `LP_SOLVER` backend selection.
+  `OptimisationSense`, `SolutionStatus`), and the `solve()` dispatch /
+  `LP_SOLVER` backend selection. `solve()` returns `Ok(LPSolution)` for a usable
+  solution and `Err(SolveError)` otherwise — negative outcomes are
+  `SolveError::NoSolution(NoSolution)`.
+- `src/error.rs` — hand-rolled error types: `ConfigError`, `ModelError`, `NoSolution`
+  (leaf enums) and the composite `SolveError`; no `anyhow`/`thiserror`.
 - `src/ops.rs` — operator overloading for building `LinearExpression` from variables
   and scalars (`+`, `-`, `*`, including the reverse `f64`-on-the-left forms).
 - `src/macros.rs` — the `lp_model_builder!` and `constraint!` macros (`#[macro_export]`,

@@ -280,31 +280,41 @@ enum SolverBackend {
 }
 
 impl SolverBackend {
+    /// Resolve a solver name (as accepted in `LP_SOLVER`) to a backend.
+    ///
+    /// Pure and case-insensitive, so it can be tested without touching the
+    /// process environment. Returns [`ConfigError::SolverNotEnabled`] if the named
+    /// solver's feature is not compiled in, or [`ConfigError::InvalidSolverName`]
+    /// for an unrecognised name.
+    fn backend_from_name(name: &str) -> Result<Self, ConfigError> {
+        match name.to_lowercase().as_str() {
+            "gurobi" => {
+                #[cfg(feature = "gurobi")]
+                return Ok(SolverBackend::Gurobi);
+                #[cfg(not(feature = "gurobi"))]
+                Err(ConfigError::SolverNotEnabled {
+                    requested: "gurobi",
+                })
+            }
+            "coin_cbc" | "coin-cbc" | "cbc" => {
+                #[cfg(feature = "coin_cbc")]
+                return Ok(SolverBackend::CoinCbc);
+                #[cfg(not(feature = "coin_cbc"))]
+                Err(ConfigError::SolverNotEnabled {
+                    requested: "coin_cbc",
+                })
+            }
+            _ => Err(ConfigError::InvalidSolverName {
+                name: name.to_string(),
+            }),
+        }
+    }
+
     /// Get the solver backend from environment variable or use fallback logic
     fn from_env_or_default() -> Result<Self, ConfigError> {
         // Check if LP_SOLVER environment variable is set
         if let Ok(solver_name) = env::var("LP_SOLVER") {
-            match solver_name.to_lowercase().as_str() {
-                "gurobi" => {
-                    #[cfg(feature = "gurobi")]
-                    return Ok(SolverBackend::Gurobi);
-                    #[cfg(not(feature = "gurobi"))]
-                    return Err(ConfigError::SolverNotEnabled {
-                        requested: "gurobi",
-                    });
-                }
-                "coin_cbc" | "coin-cbc" | "cbc" => {
-                    #[cfg(feature = "coin_cbc")]
-                    return Ok(SolverBackend::CoinCbc);
-                    #[cfg(not(feature = "coin_cbc"))]
-                    return Err(ConfigError::SolverNotEnabled {
-                        requested: "coin_cbc",
-                    });
-                }
-                _ => {
-                    return Err(ConfigError::InvalidSolverName { name: solver_name });
-                }
-            }
+            return Self::backend_from_name(&solver_name);
         }
 
         // Fallback logic: prefer gurobi if available, then coin_cbc
@@ -503,7 +513,6 @@ struct ObjectiveInfo<Brand> {
 /// Only produced for a successful solve, so its values are always meaningful; the
 /// [`status`](Self::status) distinguishes a proven-optimal solution from a merely
 /// feasible one.
-#[derive(Debug, Clone)]
 pub struct LPSolution<Brand> {
     /// Whether the solution is proven optimal or only feasible.
     pub status: SolutionStatus,
@@ -511,6 +520,30 @@ pub struct LPSolution<Brand> {
     pub objective_value: f64,
     variable_values: Vec<f64>,
     _brand: PhantomData<fn() -> Brand>,
+}
+
+// Manual `Debug`/`Clone` so they do not spuriously require `Brand: Debug`/`Brand: Clone`
+// (the brand is a zero-sized phantom marker — often a bare unit struct that implements
+// neither). Mirrors the hand-written impls on `VariableId`.
+impl<Brand> std::fmt::Debug for LPSolution<Brand> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LPSolution")
+            .field("status", &self.status)
+            .field("objective_value", &self.objective_value)
+            .field("variable_values", &self.variable_values)
+            .finish()
+    }
+}
+
+impl<Brand> Clone for LPSolution<Brand> {
+    fn clone(&self) -> Self {
+        Self {
+            status: self.status,
+            objective_value: self.objective_value,
+            variable_values: self.variable_values.clone(),
+            _brand: PhantomData,
+        }
+    }
 }
 
 impl<Brand> LPSolution<Brand> {
@@ -849,5 +882,93 @@ mod tests {
             (x_val - 5.0).abs() < 1e-6,
             "expected x = 5 (2x <= 10), got {x_val}"
         );
+    }
+
+    #[test]
+    fn backend_from_name_rejects_unknown() {
+        assert!(matches!(
+            SolverBackend::backend_from_name("glpk"),
+            Err(ConfigError::InvalidSolverName { name }) if name == "glpk"
+        ));
+    }
+
+    #[cfg(feature = "coin_cbc")]
+    #[test]
+    fn backend_from_name_accepts_cbc_aliases() {
+        for name in ["cbc", "coin_cbc", "coin-cbc", "CBC", "Coin_CBC"] {
+            assert!(
+                matches!(
+                    SolverBackend::backend_from_name(name),
+                    Ok(SolverBackend::CoinCbc)
+                ),
+                "{name} should resolve to CoinCbc"
+            );
+        }
+    }
+
+    #[cfg(not(feature = "gurobi"))]
+    #[test]
+    fn backend_from_name_reports_gurobi_not_enabled() {
+        assert!(matches!(
+            SolverBackend::backend_from_name("gurobi"),
+            Err(ConfigError::SolverNotEnabled {
+                requested: "gurobi"
+            })
+        ));
+    }
+
+    #[cfg(feature = "gurobi")]
+    #[test]
+    fn backend_from_name_accepts_gurobi() {
+        assert!(matches!(
+            SolverBackend::backend_from_name("gurobi"),
+            Ok(SolverBackend::Gurobi)
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_variable_from_outside_the_model() {
+        // The branded API cannot express this, but a malformed model must fail gracefully
+        // (recoverable error) rather than panicking inside a backend. Build the bad model by
+        // hand using the crate-internal fields.
+        let mut builder = lp_model_builder!();
+        let _real = builder.add_variable(VariableType::Continuous, 0.0, 10.0);
+        let bogus = VariableId {
+            id: 99,
+            _brand: PhantomData,
+        };
+        builder.add_constraint(Constraint::new(
+            LinearExpression::from_variable(bogus),
+            ConstraintSense::LessEqual,
+            5.0,
+        ));
+
+        assert!(matches!(
+            builder.solve(),
+            Err(SolveError::Model(ModelError::UnknownVariable {
+                id: 99,
+                count: 1
+            }))
+        ));
+    }
+
+    #[test]
+    fn get_value_returns_none_for_out_of_range_id() {
+        let solution: LPSolution<()> = LPSolution {
+            status: SolutionStatus::Optimal,
+            objective_value: 0.0,
+            variable_values: vec![1.0, 2.0],
+            _brand: PhantomData,
+        };
+        let valid = VariableId {
+            id: 1,
+            _brand: PhantomData,
+        };
+        let invalid = VariableId {
+            id: 5,
+            _brand: PhantomData,
+        };
+        assert_eq!(solution.get_value(valid), Some(2.0));
+        assert_eq!(solution.get_value(invalid), None);
     }
 }
