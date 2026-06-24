@@ -1,16 +1,13 @@
 # lp_solver
 
-A linear-programming model builder for Rust with pluggable solver backends.
+A high-level, solver-agnostic abstraction layer for linear and mixed-integer
+programming in Rust.
 
-Build a model with `LPModelBuilder` — add variables, add constraints, set an
-objective — then solve it with either [COIN-OR CBC](https://github.com/coin-or/Cbc)
-or [Gurobi](https://www.gurobi.com/). The model-building API is the same regardless
-of which backend runs.
-
-The core types (`VariableId`, `LinearExpression`, `Constraint`, `LPModelBuilder`)
-carry a phantom `Brand` type parameter. A `VariableId` from one builder cannot be
-used with another: such a mix-up is a compile error, not a runtime fault. The brand
-is a zero-sized type and adds no runtime cost.
+Describe an optimisation problem once — variables, linear constraints, an objective —
+with `LPModelBuilder` and natural operator syntax, then hand it to a pluggable backend
+([COIN-OR CBC](https://github.com/coin-or/Cbc) or [Gurobi](https://www.gurobi.com/)) to
+solve. The same model code runs on either solver; switching backends is a configuration
+choice, not a rewrite.
 
 ## Features
 
@@ -65,9 +62,6 @@ valid — there is no per-status matching on the happy path.
 A model with no objective is treated as a feasibility problem and, if satisfiable, returns
 `Ok` with `SolutionStatus::Optimal` and `objective_value == 0.0`.
 
-Each `lp_model_builder!()` call mints a fresh brand. For a named brand, pass an
-identifier: `lp_model_builder!(MyModel)`.
-
 ## Backend selection
 
 When both backends are compiled in, the choice is made at solve time:
@@ -79,6 +73,14 @@ When both backends are compiled in, the choice is made at solve time:
 
 The solvers write progress to standard output. Suppressing that is the caller's
 responsibility.
+
+## Type safety
+
+The core types carry a zero-sized phantom `Brand`, so a `VariableId` from one builder
+cannot be used with another — a mix-up is a compile error, not a runtime fault, at no
+runtime cost. Each `lp_model_builder!()` call mints a fresh brand; for a named brand pass
+an identifier (`lp_model_builder!(MyModel)`) or use the explicit
+`LPModelBuilder::<MyBrand>::new()`.
 
 ## Licence
 

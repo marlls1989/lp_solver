@@ -1,219 +1,94 @@
-//! Linear-programming model builder with pluggable solver backends.
+//! A high-level, solver-agnostic abstraction layer for linear and mixed-integer programming.
 //!
-//! [`LPModelBuilder`] constructs an LP model: add variables, add constraints (the
-//! [`constraint!`] macro provides comparison syntax), set an objective, then call
-//! [`solve`](LPModelBuilder::solve). The built model is solver-agnostic; at solve time it is
-//! dispatched to the COIN-OR CBC or Gurobi backend according to the `LP_SOLVER`
-//! environment variable and the enabled features (see [Solver Selection](#solver-selection)).
+//! `lp_solver` lets you describe an optimisation problem once — variables, linear constraints,
+//! and an objective — through an ergonomic builder and natural operator syntax, then hand it to a
+//! pluggable backend ([COIN-OR CBC] or [Gurobi]) to solve. The same model code runs on either
+//! solver; switching backends is a configuration choice, not a rewrite.
 //!
-//! The core types carry a phantom `Brand` type parameter, so a [`VariableId`] from one
-//! builder cannot be used with another: misuse is a compile error, not a runtime fault.
+//! Build a model with [`LPModelBuilder`], express constraints with the [`constraint!`] macro or
+//! operator overloading, then call [`solve`](LPModelBuilder::solve).
 //!
-//! # Type Safety with Branded Types
+//! [COIN-OR CBC]: https://github.com/coin-or/Cbc
+//! [Gurobi]: https://www.gurobi.com/
 //!
-//! All core types (`VariableId`, `LinearExpression`, `Constraint`, `LPModelBuilder`)
-//! use a generic `Brand` type parameter that provides compile-time guarantees:
+//! # Quick start
 //!
-//! - Variables from one builder cannot be accidentally used with another builder
-//! - Constraints are type-checked to ensure they only use variables from their builder
-//! - No runtime overhead - the brand is a zero-sized phantom type
+//! ```rust,no_run
+//! use lp_solver::{constraint, lp_model_builder, OptimisationSense, SolveError, VariableType};
 //!
-//! ## Using the Default Brand
-//!
-//! For simple cases where you only have one model, use the default brand `()`:
-//!
-//! ```rust
-//! use lp_solver::{LPModelBuilder, VariableType};
-//! use lp_solver::constraint;
-//!
-//! let mut builder: LPModelBuilder<()> = LPModelBuilder::new();
+//! # fn main() -> Result<(), SolveError> {
+//! // maximise 2x + 3y  subject to  x + y <= 10,  x >= 2,  with 0 <= x, y <= 10
+//! let mut builder = lp_model_builder!();
 //! let x = builder.add_variable(VariableType::Continuous, 0.0, 10.0);
 //! let y = builder.add_variable(VariableType::Continuous, 0.0, 10.0);
 //!
-//! // All operations work as expected
 //! builder.add_constraint(constraint!((x + y) <= 10.0));
+//! builder.add_constraint(constraint!((x) >= 2.0));
+//! builder.set_objective(2.0 * x + 3.0 * y, OptimisationSense::Maximise);
+//!
+//! // `Ok` means a usable solution was found; a negative outcome is an `Err`.
+//! let solution = builder.solve()?;
+//! println!("objective = {}", solution.objective_value);
+//! println!("x = {:?}, y = {:?}", solution.get_value(x), solution.get_value(y));
+//! # Ok(())
+//! # }
 //! ```
 //!
-//! **Note:** Type inference may require explicit annotation in some cases.
+//! # Backends
 //!
-//! ## Branded Types for Type Safety
+//! A model is solver-agnostic; the backend is chosen at solve time. Enable a backend with its
+//! Cargo feature — `coin_cbc` (default) and/or `gurobi` — and select it with the `LP_SOLVER`
+//! environment variable:
 //!
-//! All core types are generic over a `Brand` type parameter to prevent mixing
-//! variables from different LP models at compile time. Use the `lp_model_builder!()`
-//! macro to create builders with guaranteed unique brands:
+//! - `LP_SOLVER=gurobi` — use Gurobi only.
+//! - `LP_SOLVER=coin_cbc` (or `cbc`) — use CBC only.
+//! - unset — try Gurobi first (if enabled) and automatically fall back to CBC if Gurobi cannot
+//!   run (for example, no licence). The fallback reason is logged to stderr.
+//!
+//! # Building a model
+//!
+//! Add variables with [`LPModelBuilder::add_variable`] ([`Continuous`](VariableType::Continuous),
+//! [`Integer`](VariableType::Integer), or [`Binary`](VariableType::Binary)). Build linear
+//! expressions from variables and scalars with the usual operators (`2.0 * x + 3.0 * y - 5.0`),
+//! and constraints with the [`constraint!`] macro (`==`, `<=`, `>=`):
 //!
 //! ```rust
-//! use lp_solver::constraint;
-//! use lp_solver::lp_model_builder;
-//! use lp_solver::VariableType;
-//!
-//! // Each macro call creates a unique brand automatically
-//! let mut builder1 = lp_model_builder!();
-//! let mut builder2 = lp_model_builder!();
-//!
-//! let x = builder1.add_variable(VariableType::Continuous, 0.0, 10.0);
-//! let y = builder2.add_variable(VariableType::Continuous, 0.0, 10.0);
-//!
-//! // This compiles:
-//! builder1.add_constraint(constraint!((x) <= 5.0));
-//!
-//! // This would NOT compile (type error):
-//! // builder1.add_constraint(constraint!((y) <= 5.0));
-//! // ERROR: y has different brand than builder1 expects
-//! ```
-//!
-//! For custom brands, you can still use the explicit generic syntax:
-//! ```rust
-//! use lp_solver::{LPModelBuilder, VariableType};
-//!
-//! struct MyModel;
-//! let mut builder = LPModelBuilder::<MyModel>::new();
-//! ```
-//!
-//! ## Implementation Details
-//!
-//! ### Internal Data Structures
-//!
-//! The `LPModelBuilder` uses clean, strongly-typed data structures internally:
-//!
-//! - `VariableInfo`: Stores variable metadata (name, type, bounds)
-//! - `ConstraintInfo<Brand>`: Stores constraint details (name, expression, sense, RHS)
-//! - `ObjectiveInfo<Brand>`: Stores objective function information
-//!
-//! Variables and solutions use `Vec` storage rather than `HashMap`:
-//! - `LPModelBuilder.variables`: Vec of `VariableInfo`
-//! - `LPSolution.variable_values`: Vec of `f64`
-//!
-//! The `VariableId` serves as an index into these vectors, providing O(1) lookups
-//! without hashing overhead. Use `solution.get_value(var_id)` to safely access values.
-//!
-//! ### Type System Guarantees
-//!
-//! The type system enforces these invariants:
-//!
-//! 1. **Variable Binding**: `VariableId<Brand>` can only be used with `LPModelBuilder<Brand>`
-//! 2. **Expression Consistency**: All variables in a `LinearExpression<Brand>` have the same brand
-//! 3. **Constraint Matching**: `Constraint<Brand>` can only be added to matching `LPModelBuilder<Brand>`
-//! 4. **Operation Preservation**: All arithmetic operations preserve the brand type
-//!
-//! ### Manual Trait Implementations
-//!
-//! To avoid requiring `Brand` to implement any traits, `VariableId<Brand>` manually implements
-//! `Debug`, `Clone`, `Copy`, `PartialEq`, `Eq`, and `Hash`. These implementations only use the
-//! `id` field, ignoring the phantom `_brand` field.
-//!
-//! ### Zero Runtime Cost
-//!
-//! The `PhantomData<fn() -> Brand>` is a zero-sized type that exists only at compile time.
-//! Both `VariableId<()>` and `VariableId<CustomBrand>` have the same size: just `size_of::<usize>()`.
-//!
-//! # Building LP Models
-//!
-//! The module provides three main ways to build constraints:
-//!
-//! ## 1. Using the `constraint!` Macro (Recommended)
-//!
-//! The most concise way to create constraints using natural comparison syntax:
-//!
-//! ```rust,no_run
-//! use lp_solver::constraint;
-//! use lp_solver::lp_model_builder;
-//! use lp_solver::{VariableType, OptimisationSense};
+//! use lp_solver::{constraint, lp_model_builder, VariableType};
 //!
 //! let mut builder = lp_model_builder!();
-//! let x = builder.add_variable(VariableType::Continuous, 0.0, f64::INFINITY);
-//! let y = builder.add_variable(VariableType::Continuous, 0.0, f64::INFINITY);
+//! let x = builder.add_variable(VariableType::Continuous, 0.0, 10.0);
+//! let y = builder.add_variable(VariableType::Continuous, 0.0, 10.0);
 //!
-//! // Unnamed constraints (most common)
 //! builder.add_constraint(constraint!((x + y) == 10.0));
 //! builder.add_constraint(constraint!((2.0 * x - y) <= 5.0));
-//! builder.add_constraint(constraint!((x) >= 0.0));
-//!
-//! // Set objective and solve
-//! builder.set_objective(x + 2.0 * y, OptimisationSense::Maximise);
-//! let _solution = builder.solve();
 //! ```
 //!
-//! ## 2. Using `Constraint` Builder Methods
+//! The [`Constraint::eq`], [`le`](Constraint::le) and [`ge`](Constraint::ge) constructors (and
+//! [`Constraint::new`]) are equivalent alternatives to the macro.
 //!
-//! For explicit constraint construction:
+//! # Results
 //!
-//! ```rust,no_run
-//! use lp_solver::lp_model_builder;
-//! use lp_solver::{Constraint, VariableType};
+//! [`solve`](LPModelBuilder::solve) returns `Result<LPSolution, SolveError>`. An `Ok` always
+//! carries a usable solution — its [`status`](LPSolution::status) is [`SolutionStatus::Optimal`]
+//! or [`Feasible`](SolutionStatus::Feasible), and `objective_value` and
+//! [`get_value`](LPSolution::get_value) are meaningful — so `if let Ok(solution) = builder.solve()`
+//! is enough to know the result is valid. A problem with no usable solution (infeasible,
+//! unbounded, or stopped) is reported as [`SolveError::NoSolution`]; configuration and backend
+//! failures are the other [`SolveError`] variants.
 //!
-//! let mut builder = lp_model_builder!();
-//! let x = builder.add_variable(VariableType::Continuous, 0.0, 10.0);
+//! # Type safety
 //!
-//! // Unnamed (cleaner)
-//! builder.add_constraint(Constraint::eq(x + 5.0, 10.0));
-//! builder.add_constraint(Constraint::le(2.0 * x, 20.0));
-//! builder.add_constraint(Constraint::ge(x, 0.0));
+//! The core types carry a zero-sized phantom `Brand`, so a [`VariableId`] from one builder cannot
+//! be used with another — such a mix-up is a compile error, not a runtime fault, at no runtime
+//! cost. [`lp_model_builder!`] mints a fresh brand per call; for a named brand use the explicit
+//! form:
 //!
-//! ```
+//! ```rust
+//! use lp_solver::{LPModelBuilder, VariableType};
 //!
-//! ## 3. Using `Constraint::new` Directly
-//!
-//! For maximum control:
-//!
-//! ```rust,no_run
-//! use lp_solver::lp_model_builder;
-//! use lp_solver::{Constraint, ConstraintSense, VariableType};
-//!
-//! let mut builder = lp_model_builder!();
-//! let x = builder.add_variable(VariableType::Continuous, 0.0, 10.0);
-//! let y = builder.add_variable(VariableType::Continuous, 0.0, 10.0);
-//!
-//! let c = Constraint::new(x + y, ConstraintSense::Equal, 10.0);
-//! builder.add_constraint(c);
-//! ```
-//!
-//! # Expression Building
-//!
-//! Linear expressions support natural operator overloading:
-//!
-//! ```rust,no_run
-//! use lp_solver::lp_model_builder;
-//! use lp_solver::VariableType;
-//!
-//! let mut builder = lp_model_builder!();
-//! let x = builder.add_variable(VariableType::Continuous, 0.0, 10.0);
-//! let y = builder.add_variable(VariableType::Continuous, 0.0, 10.0);
-//!
-//! // Combine variables and constants
-//! let _expr = 2.0 * x + 3.0 * y - 5.0;
-//! let _expr2 = x + y;
-//! let _expr3 = x - y + 10.0;
-//! ```
-//!
-//! # Solver Selection
-//!
-//! The solver backend can be controlled via the `LP_SOLVER` environment variable:
-//! - `"gurobi"` - Use Gurobi only (requires `gurobi` feature)
-//! - `"coin_cbc"` or `"cbc"` - Use COIN-OR CBC only (requires `coin_cbc` feature)
-//!
-//! ## Automatic Fallback Behavior
-//!
-//! If `LP_SOLVER` is not set, the system implements automatic fallback:
-//!
-//! 1. **Try Gurobi first** (if `gurobi` feature is enabled)
-//! 2. **Fallback to CBC** if Gurobi fails due to license issues or other errors (requires `coin_cbc` feature)
-//! 3. **Use CBC directly** if Gurobi is not available
-//!
-//! This ensures robust operation even when Gurobi licenses are unavailable or expired.
-//! License failures are logged to stderr before falling back to CBC.
-//!
-//! ## Examples
-//!
-//! ```bash
-//! # Force Gurobi only (will fail if license unavailable)
-//! LP_SOLVER=gurobi ./your_program
-//!
-//! # Force CBC only
-//! LP_SOLVER=coin_cbc ./your_program
-//!
-//! # Use automatic fallback (default - tries Gurobi, falls back to CBC)
-//! ./your_program
+//! struct ProductionModel;
+//! let mut builder = LPModelBuilder::<ProductionModel>::new();
+//! let _x = builder.add_variable(VariableType::Continuous, 0.0, 10.0);
 //! ```
 
 #![warn(missing_docs)]
