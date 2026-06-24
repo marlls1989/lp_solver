@@ -104,6 +104,46 @@ impl From<ModelError> for io::Error {
     }
 }
 
+/// A negative optimisation outcome: the solve ran but produced no usable solution.
+///
+/// Returned (wrapped in [`SolveError::NoSolution`]) instead of an [`LPSolution`], so a
+/// successful `Ok` always carries a usable solution and callers need not inspect a status
+/// to tell success from failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum NoSolution {
+    /// The model was proven infeasible: no assignment satisfies the constraints.
+    Infeasible,
+    /// The model was proven unbounded: the objective can be improved without limit.
+    Unbounded,
+    /// The model is infeasible or unbounded; the solver could not distinguish the two.
+    InfeasibleOrUnbounded,
+    /// The solver stopped before reaching a conclusion and without a usable solution —
+    /// for example a time, node, iteration or solution limit, a cutoff, numerical
+    /// trouble, an interruption, or a model that was never optimised.
+    Stopped,
+}
+
+impl fmt::Display for NoSolution {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let reason = match self {
+            NoSolution::Infeasible => "the model is infeasible",
+            NoSolution::Unbounded => "the model is unbounded",
+            NoSolution::InfeasibleOrUnbounded => "the model is infeasible or unbounded",
+            NoSolution::Stopped => "the solver stopped without finding a solution",
+        };
+        f.write_str(reason)
+    }
+}
+
+impl std::error::Error for NoSolution {}
+
+impl From<NoSolution> for io::Error {
+    fn from(err: NoSolution) -> Self {
+        io::Error::new(io::ErrorKind::InvalidData, err)
+    }
+}
+
 /// Errors that can occur while solving a model.
 ///
 /// This is the composite error returned by
@@ -117,6 +157,8 @@ pub enum SolveError {
     Config(ConfigError),
     /// Model validation error.
     Model(ModelError),
+    /// The solve completed but yielded no usable solution (infeasible, unbounded, …).
+    NoSolution(NoSolution),
     /// The Gurobi backend returned an error.
     #[cfg(feature = "gurobi")]
     Gurobi(::gurobi::Error),
@@ -127,6 +169,7 @@ impl fmt::Display for SolveError {
         match self {
             SolveError::Config(e) => write!(f, "configuration error: {}", e),
             SolveError::Model(e) => write!(f, "model error: {}", e),
+            SolveError::NoSolution(e) => write!(f, "no solution: {}", e),
             #[cfg(feature = "gurobi")]
             SolveError::Gurobi(e) => write!(f, "Gurobi backend error: {}", e),
         }
@@ -138,6 +181,7 @@ impl std::error::Error for SolveError {
         match self {
             SolveError::Config(e) => Some(e),
             SolveError::Model(e) => Some(e),
+            SolveError::NoSolution(e) => Some(e),
             #[cfg(feature = "gurobi")]
             SolveError::Gurobi(e) => Some(e),
         }
@@ -156,6 +200,12 @@ impl From<ModelError> for SolveError {
     }
 }
 
+impl From<NoSolution> for SolveError {
+    fn from(err: NoSolution) -> Self {
+        SolveError::NoSolution(err)
+    }
+}
+
 #[cfg(feature = "gurobi")]
 impl From<::gurobi::Error> for SolveError {
     fn from(err: ::gurobi::Error) -> Self {
@@ -168,6 +218,7 @@ impl From<SolveError> for io::Error {
         match err {
             SolveError::Config(e) => e.into(),
             SolveError::Model(e) => e.into(),
+            SolveError::NoSolution(e) => e.into(),
             #[cfg(feature = "gurobi")]
             SolveError::Gurobi(e) => io::Error::other(e),
         }
@@ -205,6 +256,29 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains('7'));
         assert!(msg.contains('3'));
+    }
+
+    #[test]
+    fn no_solution_displays_reason() {
+        assert!(NoSolution::Infeasible.to_string().contains("infeasible"));
+        assert!(NoSolution::Unbounded.to_string().contains("unbounded"));
+        assert!(NoSolution::Stopped.to_string().contains("stopped"));
+    }
+
+    #[test]
+    fn solve_error_from_no_solution_sets_variant_and_source() {
+        let err: SolveError = NoSolution::Infeasible.into();
+        assert!(matches!(
+            err,
+            SolveError::NoSolution(NoSolution::Infeasible)
+        ));
+        assert!(err.source().is_some());
+    }
+
+    #[test]
+    fn no_solution_to_io_error_is_invalid_data() {
+        let io_err: io::Error = NoSolution::Unbounded.into();
+        assert_eq!(io_err.kind(), io::ErrorKind::InvalidData);
     }
 
     #[test]

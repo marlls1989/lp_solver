@@ -1,2 +1,5 @@
 /target
 Cargo.lock
+
+# stray rustc/doctest codegen objects
+*.rcgu.o

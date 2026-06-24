@@ -1,10 +1,11 @@
 use std::collections::HashMap;
 
+use ::coin_cbc::raw::SecondaryStatus;
 use ::coin_cbc::{Model, Sense};
 
 use crate::{
-    ConstraintSense, LPModelBuilder, LPSolution, LinearTerm, ModelError, OptimisationSense,
-    OptimisationStatus, SolveError, VariableId, VariableType,
+    ConstraintSense, LPModelBuilder, LPSolution, LinearTerm, ModelError, NoSolution,
+    OptimisationSense, SolutionStatus, SolveError, VariableId, VariableType,
 };
 
 /// Solve an LP model using Coin CBC
@@ -102,37 +103,37 @@ pub fn solve_coin_cbc<Brand>(
     // Solve the model
     let solution = model.solve();
 
-    // Determine optimisation status BEFORE reading any values.
-    let status = if solution.raw().is_proven_optimal() {
-        OptimisationStatus::Optimal
-    } else if solution.raw().is_proven_infeasible() {
-        OptimisationStatus::Infeasible
-    } else if solution.raw().is_continuous_unbounded() {
-        OptimisationStatus::Unbounded
+    // Determine the outcome BEFORE reading any values. A negative outcome is returned as an
+    // error; only a usable solution (optimal, or a feasible incumbent from an early stop)
+    // proceeds to value extraction.
+    let raw = solution.raw();
+    let status = if raw.is_proven_optimal() {
+        SolutionStatus::Optimal
+    } else if raw.is_proven_infeasible() {
+        return Err(NoSolution::Infeasible.into());
+    } else if raw.is_continuous_unbounded() {
+        return Err(NoSolution::Unbounded.into());
+    } else if raw.secondary_status() == SecondaryStatus::HasSolution {
+        // The solve stopped early (a limit or user event) but a feasible incumbent is available.
+        SolutionStatus::Feasible
     } else {
-        OptimisationStatus::Other("Unknown status")
+        // Stopped without a usable solution (limit reached, abandoned, numerical trouble).
+        return Err(NoSolution::Stopped.into());
     };
 
-    // Only extract column/objective values when the solve actually succeeded. For an
-    // infeasible/unknown solve CBC's post-solve columns are meaningless; reading them
-    // (as we used to, unconditionally) would hand callers garbage delays. Mirror the
-    // Gurobi backend, which returns zeros for any non-optimal status.
+    // A usable solution exists, so its columns are meaningful.
     let num_vars = builder.variables.len();
     let mut variable_values = vec![0.0; num_vars];
-    let objective_value = if status == OptimisationStatus::Optimal {
-        for (var_id, col) in var_map.iter() {
-            variable_values[var_id.id] = solution.col(*col);
-        }
+    for (var_id, col) in var_map.iter() {
+        variable_values[var_id.id] = solution.col(*col);
+    }
 
-        if let Some(obj_info) = &builder.objective {
-            let mut obj_val = obj_info.expression.constant;
-            for term in &obj_info.expression.terms {
-                obj_val += term.coefficient * variable_values[term.variable.id];
-            }
-            obj_val
-        } else {
-            0.0
+    let objective_value = if let Some(obj_info) = &builder.objective {
+        let mut obj_val = obj_info.expression.constant;
+        for term in &obj_info.expression.terms {
+            obj_val += term.coefficient * variable_values[term.variable.id];
         }
+        obj_val
     } else {
         0.0
     };

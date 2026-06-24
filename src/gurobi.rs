@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use ::gurobi::{ConstrSense, Env, LinExpr, Model, ModelSense, Status, VarType, attr};
 
 use crate::{
-    ConstraintSense, LPModelBuilder, LPSolution, ModelError, OptimisationSense, OptimisationStatus,
-    SolveError, VariableId, VariableType,
+    ConstraintSense, LPModelBuilder, LPSolution, ModelError, NoSolution, OptimisationSense,
+    SolutionStatus, SolveError, VariableId, VariableType,
 };
 
 /// Solve an LP model using Gurobi
@@ -103,42 +103,40 @@ pub fn solve_gurobi<Brand>(
     // Optimise
     model.optimize()?;
 
-    // Get status
+    // Map the Gurobi status to an outcome. Negative outcomes return early as errors; only a
+    // usable solution proceeds. Every `gurobi::Status` is handled explicitly.
     let status = model.status()?;
-    let optimisation_status = match status {
-        Status::Optimal => OptimisationStatus::Optimal,
+    let solution_status = match status {
+        Status::Optimal => SolutionStatus::Optimal,
         // A sub-optimal solution is feasible but not proven optimal.
-        Status::SubOptimal => OptimisationStatus::Feasible,
-        Status::Infeasible => OptimisationStatus::Infeasible,
-        Status::Unbounded => OptimisationStatus::Unbounded,
-        Status::InfOrUnbd => OptimisationStatus::InfeasibleOrUnbounded,
-        _ => OptimisationStatus::Other("Unknown status"),
+        Status::SubOptimal => SolutionStatus::Feasible,
+        Status::Infeasible => return Err(NoSolution::Infeasible.into()),
+        Status::Unbounded => return Err(NoSolution::Unbounded.into()),
+        Status::InfOrUnbd => return Err(NoSolution::InfeasibleOrUnbounded.into()),
+        // The solver stopped before reaching a conclusion (or never ran). Gurobi may hold a
+        // feasible incumbent in some of these cases, but the crate exposes no way to read the
+        // solution count, so treat them all as "stopped without a usable solution".
+        Status::Loaded
+        | Status::CutOff
+        | Status::IterationLimit
+        | Status::NodeLimit
+        | Status::TimeLimit
+        | Status::SolutionLimit
+        | Status::Interrupted
+        | Status::Numeric
+        | Status::InProgress => return Err(NoSolution::Stopped.into()),
     };
 
-    // Extract variable values and objective value only when a solution exists
-    // (optimal or feasible-but-sub-optimal). For infeasible/unbounded/other
-    // statuses Gurobi has no solution to read, so return zeros.
+    // A usable solution exists, so read its values.
     let num_vars = builder.variables.len();
     let mut variable_values = vec![0.0; num_vars];
-    let objective_value = match optimisation_status {
-        OptimisationStatus::Optimal | OptimisationStatus::Feasible => {
-            // Get variable values
-            for (var_id, var) in &var_map {
-                let value = var.get(&model, attr::X)?;
-                variable_values[var_id.id] = value;
-            }
-
-            // Get objective value
-            model.get(attr::ObjVal)?
-        }
-        _ => {
-            // For infeasible, unbounded, or other statuses, return default values
-            0.0
-        }
-    };
+    for (var_id, var) in &var_map {
+        variable_values[var_id.id] = var.get(&model, attr::X)?;
+    }
+    let objective_value = model.get(attr::ObjVal)?;
 
     Ok(LPSolution {
-        status: optimisation_status,
+        status: solution_status,
         objective_value,
         variable_values,
         _brand: std::marker::PhantomData,

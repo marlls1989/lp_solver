@@ -50,22 +50,20 @@ println!("x = {:?}", solution.get_value(x));
 
 ## Interpreting results
 
-`solve()` returns an [`LPSolution`] whose `status` is an `OptimisationStatus`:
+`solve()` splits the outcome across the `Result`: a usable solution is `Ok`, any negative
+outcome is `Err`. So `if let Ok(solution) = builder.solve()` is enough to know the result is
+valid — there is no per-status matching on the happy path.
 
-- `Optimal` — an optimal solution was found; `objective_value` and `get_value` are meaningful.
-- `Feasible` — a feasible but not provably optimal solution (some solvers/limits); values are usable.
-- `Infeasible` — no solution satisfies the constraints.
-- `Unbounded` / `InfeasibleOrUnbounded` — the objective is unbounded, or the solver could not
-  distinguish the two.
-- `Other(_)` — a solver-specific status not covered above.
+- `Ok(LPSolution)` — a solution exists. Its `status` is a `SolutionStatus`: `Optimal` (proven
+  optimal) or `Feasible` (a usable incumbent that was not proven optimal). `objective_value` and
+  `get_value`/`values` are always meaningful.
+- `Err(SolveError::NoSolution(_))` — the solve ran but produced no usable solution: `Infeasible`,
+  `Unbounded`, `InfeasibleOrUnbounded`, or `Stopped` (a limit/cutoff/numerical/interrupted halt).
+- `Err(SolveError::Config(_) | SolveError::Model(_) | SolveError::Gurobi(_))` — the solve could
+  not run: a bad `LP_SOLVER` value or no backend enabled, an invalid model, or a backend error.
 
-For any non-`Optimal`/`Feasible` status the variable values and objective are zeroed; check the
-status before reading them. A model with no objective is treated as a feasibility problem and, if
-satisfiable, returns `Optimal` with `objective_value == 0.0`.
-
-`solve()` returns `Err(SolveError)` only for configuration problems (a bad `LP_SOLVER` value or no
-backend enabled), an invalid model, or a backend error — never for an infeasible/unbounded model,
-which is reported through `status` instead.
+A model with no objective is treated as a feasibility problem and, if satisfiable, returns
+`Ok` with `SolutionStatus::Optimal` and `objective_value == 0.0`.
 
 Each `lp_model_builder!()` call mints a fresh brand. For a named brand, pass an
 identifier: `lp_model_builder!(MyModel)`.

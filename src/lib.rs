@@ -252,26 +252,19 @@ pub enum OptimisationSense {
     Maximise,
 }
 
-/// Status of the optimisation process
+/// A successful optimisation outcome: a usable solution is available.
+///
+/// Carried by [`LPSolution`], which is only produced when the solve succeeds. Negative
+/// outcomes (infeasible, unbounded, …) are reported as [`NoSolution`] via an `Err`, not
+/// here. Marked `#[non_exhaustive]`: more positive outcomes may be distinguished later.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
-pub enum OptimisationStatus {
-    /// Optimal solution found
+#[non_exhaustive]
+pub enum SolutionStatus {
+    /// An optimal solution was found and proven optimal.
     Optimal,
-    /// Feasible solution found, but not necessarily optimal
+    /// A feasible solution is available but was not proven optimal — the solver
+    /// relaxed its optimality tolerances or stopped early while holding an incumbent.
     Feasible,
-    /// Problem is infeasible (no solution exists)
-    Infeasible,
-    /// Problem is unbounded
-    Unbounded,
-    /// Problem is infeasible or unbounded
-    ///
-    /// Returned when the solver cannot distinguish the two cases.
-    InfeasibleOrUnbounded,
-    /// A solver-specific status not covered by the variants above
-    ///
-    /// The string is a short static description of the raw solver status.
-    Other(&'static str),
 }
 
 /// Available LP solver backends
@@ -506,9 +499,15 @@ struct ObjectiveInfo<Brand> {
 }
 
 /// Result of solving an LP model
+///
+/// Only produced for a successful solve, so its values are always meaningful; the
+/// [`status`](Self::status) distinguishes a proven-optimal solution from a merely
+/// feasible one.
 #[derive(Debug, Clone)]
 pub struct LPSolution<Brand> {
-    pub status: OptimisationStatus,
+    /// Whether the solution is proven optimal or only feasible.
+    pub status: SolutionStatus,
+    /// The objective value at the returned solution.
     pub objective_value: f64,
     variable_values: Vec<f64>,
     _brand: PhantomData<fn() -> Brand>,
@@ -656,18 +655,19 @@ impl<Brand> LPModelBuilder<Brand> {
     /// 3. Fallback is triggered by Gurobi license issues or other initialisation errors
     ///
     /// A model with no objective set is treated as a feasibility problem: if it is
-    /// satisfiable the result is `Optimal` with an `objective_value` of `0.0`.
+    /// satisfiable the result is `Ok` with [`SolutionStatus::Optimal`] and an
+    /// `objective_value` of `0.0`.
     ///
-    /// Infeasible and unbounded models are **not** errors — they are reported through
-    /// [`LPSolution::status`]. Inspect the status before reading variable values.
+    /// A successful `Ok` always carries a usable solution; the only thing to check on it is
+    /// whether the [`status`](LPSolution::status) is `Optimal` or merely `Feasible`.
     ///
     /// # Errors
     ///
-    /// Returns [`SolveError::Config`] if `LP_SOLVER` names an unknown or
-    /// not-compiled-in solver, or no backend feature is enabled;
-    /// [`SolveError::Model`] if the model fails validation (a variable not belonging
-    /// to this builder); and [`SolveError::Gurobi`] for an error reported by the
-    /// Gurobi backend.
+    /// Returns [`SolveError::NoSolution`] when the solve completes but yields no usable
+    /// solution (infeasible, unbounded, or stopped); [`SolveError::Config`] if `LP_SOLVER`
+    /// names an unknown or not-compiled-in solver, or no backend feature is enabled;
+    /// [`SolveError::Model`] if the model fails validation (a variable not belonging to this
+    /// builder); and [`SolveError::Gurobi`] for an error reported by the Gurobi backend.
     pub fn solve(self) -> Result<LPSolution<Brand>, SolveError> {
         // Reject malformed models up front so backends never panic on a bad index.
         self.validate()?;
@@ -689,6 +689,9 @@ impl<Brand> LPModelBuilder<Brand> {
         {
             match crate::gurobi::solve_gurobi(&self) {
                 Ok(solution) => Ok(solution),
+                // A definitive no-solution result is authoritative — CBC would only agree, so
+                // do not waste a second solve. Only operational Gurobi failures fall back.
+                Err(e @ SolveError::NoSolution(_)) => Err(e),
                 Err(gurobi_error) => {
                     // Check if CBC is available as fallback
                     #[cfg(feature = "coin_cbc")]
@@ -725,7 +728,7 @@ impl<Brand> Default for LPModelBuilder<Brand> {
 
 // Error types
 pub mod error;
-pub use error::{ConfigError, ModelError, SolveError};
+pub use error::{ConfigError, ModelError, NoSolution, SolveError};
 
 // Macros for convenient syntax
 pub mod macros;
@@ -840,7 +843,7 @@ mod tests {
         builder.set_objective(x, OptimisationSense::Maximise);
 
         let solution = builder.solve().expect("solve should succeed");
-        assert_eq!(solution.status, OptimisationStatus::Optimal);
+        assert_eq!(solution.status, SolutionStatus::Optimal);
         let x_val = solution.get_value(x).expect("x should have a value");
         assert!(
             (x_val - 5.0).abs() < 1e-6,
