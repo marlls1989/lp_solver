@@ -47,7 +47,16 @@ macro_rules! lp_model_builder {
 /// Create constraints using natural comparison syntax
 ///
 /// This macro provides a declarative way to create `Constraint` objects using
-/// comparison-like syntax. The left-hand side must be in parentheses.
+/// comparison-like syntax.
+///
+/// # Syntax
+///
+/// - The left-hand side **must be parenthesised**: `constraint!((x + y) <= 10.0)`.
+/// - Supported comparison operators are `==`, `<=`, and `>=`. Strict inequalities
+///   (`<`, `>`) are not provided — LP solvers do not support them.
+/// - The right-hand side **must be a scalar** (it is cast with `as f64`); a variable
+///   on the right will not compile. Move variables to the left instead, e.g. write
+///   `constraint!((x - y) <= 0.0)` rather than `x <= y`.
 ///
 /// # Examples
 ///
@@ -65,10 +74,7 @@ macro_rules! lp_model_builder {
 /// let c1 = constraint!((x + y) == 10.0);
 /// let c2 = constraint!((2.0 * x) <= 5.0);
 /// let c3 = constraint!((x - y) >= 0.0);
-/// let c4 = constraint!((x) > 1.0);
 ///
-/// // Simple constraint creation
-/// let c5 = constraint!((x + y) == 10.0);
 /// builder.add_constraint(constraint!((2.0 * x) <= 15.0));
 /// ```
 #[macro_export]
@@ -81,9 +87,6 @@ macro_rules! constraint {
     };
     (($lhs:expr) >= $rhs:expr) => {
         $crate::Constraint::new($lhs, $crate::ConstraintSense::GreaterEqual, $rhs as f64)
-    };
-    (($lhs:expr) > $rhs:expr) => {
-        $crate::Constraint::new($lhs, $crate::ConstraintSense::Greater, $rhs as f64)
     };
 }
 

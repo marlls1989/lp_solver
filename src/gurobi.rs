@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use ::gurobi::{ConstrSense, Env, LinExpr, Model, ModelSense, Status, VarType, attr};
 
 use crate::{
-    ConstraintId, ConstraintSense, LPModelBuilder, LPSolution, ModelError, OptimisationSense,
-    OptimisationStatus, SolveError, VariableId, VariableType,
+    ConstraintSense, LPModelBuilder, LPSolution, ModelError, OptimisationSense, OptimisationStatus,
+    SolveError, VariableId, VariableType,
 };
 
 /// Solve an LP model using Gurobi
@@ -42,8 +42,7 @@ pub fn solve_gurobi<Brand>(
     }
 
     // Add constraints
-    let mut constr_map = HashMap::new();
-    for (constr_id, constraint) in builder.constraints.iter().enumerate() {
+    for (constr_id, constraint) in builder.constraints.iter().flatten().enumerate() {
         let mut gurobi_expr = LinExpr::new();
 
         for term in &constraint.expression.terms {
@@ -63,16 +62,14 @@ pub fn solve_gurobi<Brand>(
             ConstraintSense::LessEqual => ConstrSense::Less,
             ConstraintSense::Equal => ConstrSense::Equal,
             ConstraintSense::GreaterEqual => ConstrSense::Greater,
-            ConstraintSense::Greater => ConstrSense::Greater,
         };
 
-        let constraint = model.add_constr(
+        model.add_constr(
             &format!("c_{}", constr_id),
             gurobi_expr,
             sense,
             constraint.rhs,
         )?;
-        constr_map.insert(ConstraintId(constr_id), constraint);
     }
 
     // Update the model before setting objective
@@ -109,17 +106,22 @@ pub fn solve_gurobi<Brand>(
     // Get status
     let status = model.status()?;
     let optimisation_status = match status {
-        Status::Optimal | Status::SubOptimal => OptimisationStatus::Optimal,
+        Status::Optimal => OptimisationStatus::Optimal,
+        // A sub-optimal solution is feasible but not proven optimal.
+        Status::SubOptimal => OptimisationStatus::Feasible,
         Status::Infeasible => OptimisationStatus::Infeasible,
         Status::Unbounded => OptimisationStatus::Unbounded,
+        Status::InfOrUnbd => OptimisationStatus::InfeasibleOrUnbounded,
         _ => OptimisationStatus::Other("Unknown status"),
     };
 
-    // Extract variable values and objective value only if model is feasible
+    // Extract variable values and objective value only when a solution exists
+    // (optimal or feasible-but-sub-optimal). For infeasible/unbounded/other
+    // statuses Gurobi has no solution to read, so return zeros.
     let num_vars = builder.variables.len();
     let mut variable_values = vec![0.0; num_vars];
     let objective_value = match optimisation_status {
-        OptimisationStatus::Optimal => {
+        OptimisationStatus::Optimal | OptimisationStatus::Feasible => {
             // Get variable values
             for (var_id, var) in &var_map {
                 let value = var.get(&model, attr::X)?;

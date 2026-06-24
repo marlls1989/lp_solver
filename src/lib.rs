@@ -128,8 +128,6 @@
 //! builder.add_constraint(constraint!((x + y) == 10.0));
 //! builder.add_constraint(constraint!((2.0 * x - y) <= 5.0));
 //! builder.add_constraint(constraint!((x) >= 0.0));
-//! builder.add_constraint(constraint!((y) > 1.0));
-//!
 //!
 //! // Set objective and solve
 //! builder.set_objective(x + 2.0 * y, OptimisationSense::Maximise);
@@ -151,7 +149,6 @@
 //! builder.add_constraint(Constraint::eq(x + 5.0, 10.0));
 //! builder.add_constraint(Constraint::le(2.0 * x, 20.0));
 //! builder.add_constraint(Constraint::ge(x, 0.0));
-//! builder.add_constraint(Constraint::gt(x, 1.0));
 //!
 //! ```
 //!
@@ -244,8 +241,6 @@ pub enum ConstraintSense {
     Equal,
     /// Greater than or equal to (≥)
     GreaterEqual,
-    /// Strictly greater than (>)
-    Greater,
 }
 
 /// Optimisation direction
@@ -270,8 +265,12 @@ pub enum OptimisationStatus {
     /// Problem is unbounded
     Unbounded,
     /// Problem is infeasible or unbounded
+    ///
+    /// Returned when the solver cannot distinguish the two cases.
     InfeasibleOrUnbounded,
-    /// Other status (solver-specific)
+    /// A solver-specific status not covered by the variants above
+    ///
+    /// The string is a short static description of the raw solver status.
     Other(&'static str),
 }
 
@@ -331,14 +330,19 @@ impl SolverBackend {
 /// A linear expression term: coefficient * variable
 #[derive(Debug, Clone)]
 pub struct LinearTerm<Brand> {
+    /// The scalar multiplier applied to the variable.
     pub coefficient: f64,
+    /// The variable this term refers to.
     pub variable: VariableId<Brand>,
 }
 
 /// A linear expression: sum of terms plus constant
 #[derive(Debug, Clone)]
 pub struct LinearExpression<Brand> {
+    /// The weighted variable terms summed by this expression. A variable may appear
+    /// more than once; backends coalesce repeated variables by summing coefficients.
     pub terms: Vec<LinearTerm<Brand>>,
+    /// The constant added to the sum of the terms.
     pub constant: f64,
 }
 
@@ -415,7 +419,11 @@ impl<Brand> std::hash::Hash for VariableId<Brand> {
     }
 }
 
-/// Unique identifier for a constraint in the LP model
+/// A stable handle to a constraint in an [`LPModelBuilder`]
+///
+/// Returned by [`LPModelBuilder::add_constraint`] and accepted by
+/// [`LPModelBuilder::remove_constraint`]. The handle remains valid for the lifetime
+/// of the builder, even after other constraints are removed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ConstraintId(usize);
 
@@ -480,11 +488,6 @@ impl<Brand> Constraint<Brand> {
     pub fn ge(expression: impl Into<LinearExpression<Brand>>, rhs: f64) -> Self {
         Self::new(expression, ConstraintSense::GreaterEqual, rhs)
     }
-
-    /// Create a strictly-greater-than constraint: expression > rhs
-    pub fn gt(expression: impl Into<LinearExpression<Brand>>, rhs: f64) -> Self {
-        Self::new(expression, ConstraintSense::Greater, rhs)
-    }
 }
 
 /// Variable information stored in the model
@@ -516,6 +519,14 @@ impl<Brand> LPSolution<Brand> {
     pub fn get_value(&self, var_id: VariableId<Brand>) -> Option<f64> {
         self.variable_values.get(var_id.id).copied()
     }
+
+    /// Iterate over every variable value, in the order the variables were added
+    ///
+    /// Yields one `f64` per variable. Pair it with [`get_value`](Self::get_value)
+    /// when you need the value of a specific [`VariableId`].
+    pub fn values(&self) -> impl Iterator<Item = f64> + '_ {
+        self.variable_values.iter().copied()
+    }
 }
 
 /// Builder for LP models that can work with different backends
@@ -541,7 +552,9 @@ impl<Brand> LPSolution<Brand> {
 /// ```
 pub struct LPModelBuilder<Brand> {
     variables: Vec<VariableInfo>,
-    constraints: Vec<Constraint<Brand>>,
+    // Constraints are stored in tombstone slots: removing a constraint replaces its slot with
+    // `None` rather than shifting the vector, so every `ConstraintId` handed out stays valid.
+    constraints: Vec<Option<Constraint<Brand>>>,
     objective: Option<ObjectiveInfo<Brand>>,
     _brand: PhantomData<fn() -> Brand>,
 }
@@ -577,10 +590,22 @@ impl<Brand> LPModelBuilder<Brand> {
     }
 
     /// Add a constraint to the model
+    ///
+    /// Returns a [`ConstraintId`] handle that stays valid for the lifetime of the
+    /// builder and can later be passed to [`remove_constraint`](Self::remove_constraint).
     pub fn add_constraint(&mut self, constraint: Constraint<Brand>) -> ConstraintId {
         let constr_id = ConstraintId(self.constraints.len());
-        self.constraints.push(constraint);
+        self.constraints.push(Some(constraint));
         constr_id
+    }
+
+    /// Remove a previously-added constraint from the model
+    ///
+    /// Returns the removed [`Constraint`], or `None` if the constraint was already
+    /// removed or the id does not belong to this builder. Removing a constraint does
+    /// not invalidate any other [`ConstraintId`].
+    pub fn remove_constraint(&mut self, id: ConstraintId) -> Option<Constraint<Brand>> {
+        self.constraints.get_mut(id.0).and_then(|slot| slot.take())
     }
 
     /// Set the objective function
@@ -614,7 +639,7 @@ impl<Brand> LPModelBuilder<Brand> {
             }
             Ok(())
         };
-        for constraint in &self.constraints {
+        for constraint in self.constraints.iter().flatten() {
             check(&constraint.expression)?;
         }
         if let Some(objective) = &self.objective {
@@ -629,6 +654,20 @@ impl<Brand> LPModelBuilder<Brand> {
     /// 1. If LP_SOLVER environment variable is set, use the specified solver only
     /// 2. Otherwise, try Gurobi first (if available) and fallback to CBC on failure
     /// 3. Fallback is triggered by Gurobi license issues or other initialisation errors
+    ///
+    /// A model with no objective set is treated as a feasibility problem: if it is
+    /// satisfiable the result is `Optimal` with an `objective_value` of `0.0`.
+    ///
+    /// Infeasible and unbounded models are **not** errors — they are reported through
+    /// [`LPSolution::status`]. Inspect the status before reading variable values.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SolveError::Config`] if `LP_SOLVER` names an unknown or
+    /// not-compiled-in solver, or no backend feature is enabled;
+    /// [`SolveError::Model`] if the model fails validation (a variable not belonging
+    /// to this builder); and [`SolveError::Gurobi`] for an error reported by the
+    /// Gurobi backend.
     pub fn solve(self) -> Result<LPSolution<Brand>, SolveError> {
         // Reject malformed models up front so backends never panic on a bad index.
         self.validate()?;
@@ -723,10 +762,6 @@ mod tests {
         let c = constraint!((x - y) >= 0.0);
         assert_eq!(c.sense, ConstraintSense::GreaterEqual);
         assert_eq!(c.rhs, 0.0);
-
-        let c = constraint!((x) > 1.0);
-        assert_eq!(c.sense, ConstraintSense::Greater);
-        assert_eq!(c.rhs, 1.0);
     }
 
     #[test]
@@ -756,9 +791,6 @@ mod tests {
 
         let c = Constraint::ge(x - 1.0, 0.0);
         assert_eq!(c.sense, ConstraintSense::GreaterEqual);
-
-        let c = Constraint::gt(x, 0.0);
-        assert_eq!(c.sense, ConstraintSense::Greater);
     }
 
     #[test]

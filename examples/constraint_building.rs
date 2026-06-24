@@ -14,7 +14,7 @@ fn main() -> Result<(), lp_solver::SolveError> {
     builder.add_constraint(constraint!((2.0 * x + 3.0 * y) <= 100.0));
     builder.add_constraint(constraint!((x - y) >= 5.0));
     builder.add_constraint(constraint!((x + y) == 50.0));
-    builder.add_constraint(constraint!((x) > 0.0));
+    builder.add_constraint(constraint!((x) >= 0.0));
 
     // Alternative: Named constraints for debugging
     // builder.add_constraint(constraint!("important", (x + y) == 50.0));

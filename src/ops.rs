@@ -239,6 +239,44 @@ impl<Brand> std::ops::Sub<VariableId<Brand>> for f64 {
     }
 }
 
+impl<Brand> std::ops::Add<LinearExpression<Brand>> for f64 {
+    type Output = LinearExpression<Brand>;
+
+    fn add(self, other: LinearExpression<Brand>) -> Self::Output {
+        other + self
+    }
+}
+
+impl<Brand> std::ops::Sub<LinearExpression<Brand>> for f64 {
+    type Output = LinearExpression<Brand>;
+
+    fn sub(self, other: LinearExpression<Brand>) -> Self::Output {
+        // `self - other` (scalar minus expression). Subtraction is not commutative, so build
+        // `(constant self) - other` rather than negating in the wrong direction.
+        LinearExpression::new(self) - other
+    }
+}
+
+// ============================================================================
+// Unary negation
+// ============================================================================
+
+impl<Brand> std::ops::Neg for VariableId<Brand> {
+    type Output = LinearExpression<Brand>;
+
+    fn neg(self) -> Self::Output {
+        LinearExpression::from_variable(self) * -1.0
+    }
+}
+
+impl<Brand> std::ops::Neg for LinearExpression<Brand> {
+    type Output = LinearExpression<Brand>;
+
+    fn neg(self) -> Self::Output {
+        self * -1.0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::VariableType;

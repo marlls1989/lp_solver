@@ -42,10 +42,30 @@ builder.add_constraint(constraint!((x) >= 2.0));
 builder.set_objective(x + 2.0 * y, OptimisationSense::Maximise);
 
 let solution = builder.solve()?;
+println!("status = {:?}", solution.status);
 println!("objective = {}", solution.objective_value);
 println!("x = {:?}", solution.get_value(x));
-# Ok::<(), anyhow::Error>(())
+# Ok::<(), lp_solver::SolveError>(())
 ```
+
+## Interpreting results
+
+`solve()` returns an [`LPSolution`] whose `status` is an `OptimisationStatus`:
+
+- `Optimal` — an optimal solution was found; `objective_value` and `get_value` are meaningful.
+- `Feasible` — a feasible but not provably optimal solution (some solvers/limits); values are usable.
+- `Infeasible` — no solution satisfies the constraints.
+- `Unbounded` / `InfeasibleOrUnbounded` — the objective is unbounded, or the solver could not
+  distinguish the two.
+- `Other(_)` — a solver-specific status not covered above.
+
+For any non-`Optimal`/`Feasible` status the variable values and objective are zeroed; check the
+status before reading them. A model with no objective is treated as a feasibility problem and, if
+satisfiable, returns `Optimal` with `objective_value == 0.0`.
+
+`solve()` returns `Err(SolveError)` only for configuration problems (a bad `LP_SOLVER` value or no
+backend enabled), an invalid model, or a backend error — never for an infeasible/unbounded model,
+which is reported through `status` instead.
 
 Each `lp_model_builder!()` call mints a fresh brand. For a named brand, pass an
 identifier: `lp_model_builder!(MyModel)`.

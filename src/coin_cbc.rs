@@ -7,20 +7,6 @@ use crate::{
     OptimisationStatus, SolveError, VariableId, VariableType,
 };
 
-/// Round a floating-point number to a specified number of significant digits
-/// This is an workaround to mask floating point errors in CBC.
-fn round_to_sig_digits(value: f64, digits: u32) -> f64 {
-    // Leave zero and non-finite values (NaN / infinity) untouched: log10 of these
-    // would produce garbage that propagates into delay/objective numbers.
-    if value == 0.0 || !value.is_finite() {
-        return value;
-    }
-
-    let magnitude = value.abs().log10().floor() as i32;
-    let scale = 10_f64.powi(digits as i32 - magnitude - 1);
-    (value * scale).round() / scale
-}
-
 /// Solve an LP model using Coin CBC
 pub fn solve_coin_cbc<Brand>(
     builder: &LPModelBuilder<Brand>,
@@ -54,7 +40,7 @@ pub fn solve_coin_cbc<Brand>(
     }
 
     // Add constraints
-    for constraint in &builder.constraints {
+    for constraint in builder.constraints.iter().flatten() {
         let row = model.add_row();
 
         // Coalesce duplicate variables before handing off: CBC's `set_weight` OVERWRITES
@@ -87,14 +73,6 @@ pub fn solve_coin_cbc<Brand>(
             }
             ConstraintSense::GreaterEqual => {
                 model.set_row_lower(row, rhs_adjusted);
-            }
-            ConstraintSense::Greater => {
-                // Coin CBC doesn't support strict inequalities, use >= with a small epsilon.
-                // Scale the epsilon to the RHS magnitude so it is not lost to float precision
-                // when the RHS is large (a fixed 1e-10 added to a large value rounds away,
-                // silently degrading `>` to `>=`).
-                let epsilon = 1e-10 * rhs_adjusted.abs().max(1.0);
-                model.set_row_lower(row, rhs_adjusted + epsilon);
             }
         }
     }
@@ -129,6 +107,8 @@ pub fn solve_coin_cbc<Brand>(
         OptimisationStatus::Optimal
     } else if solution.raw().is_proven_infeasible() {
         OptimisationStatus::Infeasible
+    } else if solution.raw().is_continuous_unbounded() {
+        OptimisationStatus::Unbounded
     } else {
         OptimisationStatus::Other("Unknown status")
     };
@@ -141,7 +121,7 @@ pub fn solve_coin_cbc<Brand>(
     let mut variable_values = vec![0.0; num_vars];
     let objective_value = if status == OptimisationStatus::Optimal {
         for (var_id, col) in var_map.iter() {
-            variable_values[var_id.id] = round_to_sig_digits(solution.col(*col), 8);
+            variable_values[var_id.id] = solution.col(*col);
         }
 
         if let Some(obj_info) = &builder.objective {
@@ -149,7 +129,7 @@ pub fn solve_coin_cbc<Brand>(
             for term in &obj_info.expression.terms {
                 obj_val += term.coefficient * variable_values[term.variable.id];
             }
-            round_to_sig_digits(obj_val, 8)
+            obj_val
         } else {
             0.0
         }
