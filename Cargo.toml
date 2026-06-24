@@ -1,0 +1,21 @@
+[package]
+name = "lp_solver"
+version = "0.1.0"
+edition = "2024"
+authors = ["Marcos Sartori <marcos.sartori@ncl.ac.uk>"]
+license = "MIT OR Apache-2.0"
+description = "Type-safe linear-programming model builder with pluggable CBC/Gurobi backends"
+repository = "https://github.com/marlls1989/lp_solver"
+keywords = ["linear-programming", "optimisation", "cbc", "gurobi", "lp"]
+categories = ["mathematics", "science"]
+readme = "README.md"
+
+[features]
+default = ["coin_cbc"]
+gurobi = ["dep:gurobi"]
+coin_cbc = ["dep:coin_cbc"]
+
+[dependencies]
+anyhow = "1.0.71"
+gurobi = { version = "~0.3.4", optional = true }
+coin_cbc = { version = "0.1.8", optional = true }
