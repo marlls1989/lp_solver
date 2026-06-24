@@ -61,3 +61,17 @@ on Debian/Ubuntu).
 `solve()` chooses a backend at runtime. With `LP_SOLVER` set to `gurobi` or
 `coin_cbc`/`cbc`, that backend is used exclusively. Unset, it tries Gurobi first (if
 compiled in) and falls back to CBC on failure.
+
+## Releasing
+
+Keep `CHANGELOG.md` current: record user-facing changes under `## [Unreleased]` as they
+land. To cut a release:
+
+1. Move the `[Unreleased]` entries into a new `## [x.y.z] - YYYY-MM-DD` section and update
+   the compare links at the bottom of `CHANGELOG.md`.
+2. Bump `version` in `Cargo.toml`.
+3. Verify: `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`,
+   `cargo test`, `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features`, and
+   `cargo publish --dry-run`.
+4. Commit, push, then `git tag -a vX.Y.Z`, push the tag, `gh release create vX.Y.Z`
+   (notes from the changelog), and `cargo publish` (permanent — cannot be overwritten).
