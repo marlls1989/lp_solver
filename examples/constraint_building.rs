@@ -2,7 +2,7 @@
 
 use lp_solver::{OptimisationSense, VariableType, constraint, lp_model_builder};
 
-fn main() -> anyhow::Result<()> {
+fn main() -> Result<(), lp_solver::SolveError> {
     let mut builder = lp_model_builder!();
 
     // Create variables

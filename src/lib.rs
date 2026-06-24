@@ -219,7 +219,6 @@
 //! ./your_program
 //! ```
 
-use anyhow::Result;
 use std::env;
 use std::marker::PhantomData;
 
@@ -290,7 +289,7 @@ enum SolverBackend {
 
 impl SolverBackend {
     /// Get the solver backend from environment variable or use fallback logic
-    fn from_env_or_default() -> Result<Self> {
+    fn from_env_or_default() -> Result<Self, ConfigError> {
         // Check if LP_SOLVER environment variable is set
         if let Ok(solver_name) = env::var("LP_SOLVER") {
             match solver_name.to_lowercase().as_str() {
@@ -298,23 +297,20 @@ impl SolverBackend {
                     #[cfg(feature = "gurobi")]
                     return Ok(SolverBackend::Gurobi);
                     #[cfg(not(feature = "gurobi"))]
-                    return Err(anyhow::anyhow!(
-                        "Gurobi solver requested via LP_SOLVER but gurobi feature not enabled"
-                    ));
+                    return Err(ConfigError::SolverNotEnabled {
+                        requested: "gurobi",
+                    });
                 }
                 "coin_cbc" | "coin-cbc" | "cbc" => {
                     #[cfg(feature = "coin_cbc")]
                     return Ok(SolverBackend::CoinCbc);
                     #[cfg(not(feature = "coin_cbc"))]
-                    return Err(anyhow::anyhow!(
-                        "Coin CBC solver requested via LP_SOLVER but coin_cbc feature not enabled"
-                    ));
+                    return Err(ConfigError::SolverNotEnabled {
+                        requested: "coin_cbc",
+                    });
                 }
                 _ => {
-                    return Err(anyhow::anyhow!(
-                        "Invalid solver '{}' in LP_SOLVER. Valid options: gurobi, coin_cbc",
-                        solver_name
-                    ));
+                    return Err(ConfigError::InvalidSolverName { name: solver_name });
                 }
             }
         }
@@ -328,9 +324,7 @@ impl SolverBackend {
         return Ok(SolverBackend::CoinCbc);
 
         #[cfg(not(any(feature = "gurobi", feature = "coin_cbc")))]
-        Err(anyhow::anyhow!(
-            "No LP solver backend available. Please enable a solver feature (e.g., 'gurobi' or 'coin_cbc')"
-        ))
+        Err(ConfigError::NoBackendAvailable)
     }
 }
 
@@ -600,13 +594,45 @@ impl<Brand> LPModelBuilder<Brand> {
         });
     }
 
+    /// Validate the model before handing it to a backend.
+    ///
+    /// Confirms that every variable referenced by a constraint or the objective
+    /// is part of this model. Branded types make a foreign variable unreachable
+    /// through the public API, but the check ensures a malformed model returns a
+    /// recoverable [`ModelError`] rather than panicking on an out-of-range index
+    /// inside a backend.
+    fn validate(&self) -> Result<(), ModelError> {
+        let count = self.variables.len();
+        let check = |expr: &LinearExpression<Brand>| -> Result<(), ModelError> {
+            for term in &expr.terms {
+                if term.variable.id >= count {
+                    return Err(ModelError::UnknownVariable {
+                        id: term.variable.id,
+                        count,
+                    });
+                }
+            }
+            Ok(())
+        };
+        for constraint in &self.constraints {
+            check(&constraint.expression)?;
+        }
+        if let Some(objective) = &self.objective {
+            check(&objective.expression)?;
+        }
+        Ok(())
+    }
+
     /// Solve the model with automatic fallback from Gurobi to Coin CBC
     ///
     /// This method implements the following solver selection strategy:
     /// 1. If LP_SOLVER environment variable is set, use the specified solver only
     /// 2. Otherwise, try Gurobi first (if available) and fallback to CBC on failure
     /// 3. Fallback is triggered by Gurobi license issues or other initialisation errors
-    pub fn solve(self) -> Result<LPSolution<Brand>> {
+    pub fn solve(self) -> Result<LPSolution<Brand>, SolveError> {
+        // Reject malformed models up front so backends never panic on a bad index.
+        self.validate()?;
+
         // Check if user explicitly requested a specific solver
         if std::env::var("LP_SOLVER").is_ok() {
             let solver = SolverBackend::from_env_or_default()?;
@@ -633,9 +659,8 @@ impl<Brand> LPModelBuilder<Brand> {
                     }
                     #[cfg(not(feature = "coin_cbc"))]
                     {
-                        Err(gurobi_error.context(
-                            "Gurobi failed and no fallback solver available. Enable coin_cbc feature for fallback support."
-                        ))
+                        // No fallback solver compiled in; surface the Gurobi error directly.
+                        Err(gurobi_error)
                     }
                 }
             }
@@ -649,9 +674,7 @@ impl<Brand> LPModelBuilder<Brand> {
 
         // No solvers available
         #[cfg(not(any(feature = "gurobi", feature = "coin_cbc")))]
-        Err(anyhow::anyhow!(
-            "No LP solver backend available. Please enable a solver feature (e.g., 'gurobi' or 'coin_cbc')"
-        ))
+        Err(SolveError::Config(ConfigError::NoBackendAvailable))
     }
 }
 
@@ -660,6 +683,10 @@ impl<Brand> Default for LPModelBuilder<Brand> {
         Self::new()
     }
 }
+
+// Error types
+pub mod error;
+pub use error::{ConfigError, ModelError, SolveError};
 
 // Macros for convenient syntax
 pub mod macros;

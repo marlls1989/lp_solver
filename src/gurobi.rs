@@ -1,15 +1,16 @@
 use std::collections::HashMap;
 
 use ::gurobi::{ConstrSense, Env, LinExpr, Model, ModelSense, Status, VarType, attr};
-use anyhow::Result;
 
 use crate::{
-    ConstraintId, ConstraintSense, LPModelBuilder, LPSolution, OptimisationSense,
-    OptimisationStatus, VariableId, VariableType,
+    ConstraintId, ConstraintSense, LPModelBuilder, LPSolution, ModelError, OptimisationSense,
+    OptimisationStatus, SolveError, VariableId, VariableType,
 };
 
 /// Solve an LP model using Gurobi
-pub fn solve_gurobi<Brand>(builder: &LPModelBuilder<Brand>) -> Result<LPSolution<Brand>> {
+pub fn solve_gurobi<Brand>(
+    builder: &LPModelBuilder<Brand>,
+) -> Result<LPSolution<Brand>, SolveError> {
     // Gurobi writes progress to stdout; muting it (if desired) is the caller's responsibility.
     let env = Env::new("")?;
     let mut model = Model::new("lp_model", &env)?;
@@ -49,10 +50,11 @@ pub fn solve_gurobi<Brand>(builder: &LPModelBuilder<Brand>) -> Result<LPSolution
             if let Some(var) = var_map.get(&term.variable) {
                 gurobi_expr = gurobi_expr.add_term(term.coefficient, var.clone());
             } else {
-                return Err(anyhow::anyhow!(
-                    "Variable {:?} not found in model",
-                    term.variable
-                ));
+                return Err(ModelError::UnknownVariable {
+                    id: term.variable.id,
+                    count: builder.variables.len(),
+                }
+                .into());
             }
         }
         gurobi_expr = gurobi_expr.add_constant(constraint.expression.constant);
@@ -84,10 +86,11 @@ pub fn solve_gurobi<Brand>(builder: &LPModelBuilder<Brand>) -> Result<LPSolution
             if let Some(var) = var_map.get(&term.variable) {
                 gurobi_expr = gurobi_expr.add_term(term.coefficient, var.clone());
             } else {
-                return Err(anyhow::anyhow!(
-                    "Variable {:?} not found in model",
-                    term.variable
-                ));
+                return Err(ModelError::UnknownVariable {
+                    id: term.variable.id,
+                    count: builder.variables.len(),
+                }
+                .into());
             }
         }
         gurobi_expr = gurobi_expr.add_constant(obj_info.expression.constant);

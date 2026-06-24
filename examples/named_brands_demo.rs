@@ -5,7 +5,7 @@
 
 use lp_solver::{OptimisationSense, VariableType, constraint, lp_model_builder};
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() {
     println!("=== Named Brand Demo ===\n");
 
     // Create two models with descriptive brand names
@@ -75,6 +75,4 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("• Same compile-time type safety as before");
     println!("• Backward compatible - anonymous brands still work");
     println!("• Zero runtime overhead - brands are phantom types\n");
-
-    Ok(())
 }

@@ -16,6 +16,5 @@ gurobi = ["dep:gurobi"]
 coin_cbc = ["dep:coin_cbc"]
 
 [dependencies]
-anyhow = "1.0.71"
 gurobi = { version = "~0.3.4", optional = true }
 coin_cbc = { version = "0.1.8", optional = true }

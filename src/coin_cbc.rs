@@ -1,11 +1,10 @@
 use std::collections::HashMap;
 
 use ::coin_cbc::{Model, Sense};
-use anyhow::Result;
 
 use crate::{
-    ConstraintSense, LPModelBuilder, LPSolution, LinearTerm, OptimisationSense, OptimisationStatus,
-    VariableId, VariableType,
+    ConstraintSense, LPModelBuilder, LPSolution, LinearTerm, ModelError, OptimisationSense,
+    OptimisationStatus, SolveError, VariableId, VariableType,
 };
 
 /// Round a floating-point number to a specified number of significant digits
@@ -23,7 +22,9 @@ fn round_to_sig_digits(value: f64, digits: u32) -> f64 {
 }
 
 /// Solve an LP model using Coin CBC
-pub fn solve_coin_cbc<Brand>(builder: &LPModelBuilder<Brand>) -> Result<LPSolution<Brand>> {
+pub fn solve_coin_cbc<Brand>(
+    builder: &LPModelBuilder<Brand>,
+) -> Result<LPSolution<Brand>, SolveError> {
     // CBC writes progress to stdout; muting it (if desired) is the caller's responsibility.
     let mut model = Model::default();
     let mut var_map = HashMap::new();
@@ -65,10 +66,11 @@ pub fn solve_coin_cbc<Brand>(builder: &LPModelBuilder<Brand>) -> Result<LPSoluti
             if let Some(&col) = var_map.get(&variable) {
                 model.set_weight(row, col, coefficient);
             } else {
-                return Err(anyhow::anyhow!(
-                    "Variable {:?} not found in model",
-                    variable
-                ));
+                return Err(ModelError::UnknownVariable {
+                    id: variable.id,
+                    count: builder.variables.len(),
+                }
+                .into());
             }
         }
 
@@ -103,10 +105,11 @@ pub fn solve_coin_cbc<Brand>(builder: &LPModelBuilder<Brand>) -> Result<LPSoluti
             if let Some(&col) = var_map.get(&variable) {
                 model.set_obj_coeff(col, coefficient);
             } else {
-                return Err(anyhow::anyhow!(
-                    "Variable {:?} not found in model",
-                    variable
-                ));
+                return Err(ModelError::UnknownVariable {
+                    id: variable.id,
+                    count: builder.variables.len(),
+                }
+                .into());
             }
         }
 
