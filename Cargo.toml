@@ -13,9 +13,21 @@ readme = "README.md"
 
 [features]
 default = ["coin_cbc"]
-gurobi = ["dep:gurobi"]
 coin_cbc = ["dep:coin_cbc"]
+# `grb` 3.x requires a Gurobi major-version feature; pin its newest binding
+# (`gurobi12`), whose env-creation FFI (GRB*envinternal) links against modern
+# Gurobi runtimes (verified locally against Gurobi 13). Building this feature
+# needs a Gurobi install discoverable via GUROBI_HOME or `gurobi_cl` on PATH —
+# see README.
+gurobi = ["dep:grb", "grb/gurobi12"]
 
 [dependencies]
-gurobi = { version = "~0.3.4", optional = true }
+grb = { version = "3", optional = true }
 coin_cbc = { version = "0.1.8", optional = true }
+
+# `grb-sys2`'s upstream build script only matches `libgurobi*.so`, so it fails to
+# locate `libgurobi*.dylib` on macOS and aborts the build. This fork's build
+# script matches the library by regex (incl. `.dylib`) and derives GUROBI_HOME
+# from `gurobi_cl` on PATH when unset. Only affects how grb-sys2 is built.
+[patch.crates-io]
+grb-sys2 = { git = "https://github.com/marlls1989/grb-sys2", branch = "fix-macos-dylib-and-path-autodetect" }

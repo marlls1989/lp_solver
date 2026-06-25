@@ -26,6 +26,15 @@ The default `coin_cbc` backend needs the CBC system library
 (`brew install coin-or-tools/coinor/cbc` on macOS; `apt install coinor-libcbc-dev`
 on Debian/Ubuntu).
 
+The `gurobi` backend uses the `grb` 3.x bindings and pins grb's `gurobi12` binding (links against
+Gurobi 11/12/13). The build finds Gurobi via `GUROBI_HOME`, falling back to `gurobi_cl` on `PATH`.
+`grb-sys2`'s upstream build script only matches `libgurobi*.so`, so on macOS it can't infer the
+`.dylib` name; this repo pins a patched `grb-sys2` via `[patch.crates-io]` (fork:
+`marlls1989/grb-sys2`) that matches the library by regex and auto-detects it. CI cannot exercise
+Gurobi (no licence); verify locally, e.g. `GUROBI_HOME=/path/to/gurobiXXX LP_SOLVER=gurobi cargo
+test --features gurobi`. If a global git `insteadOf` rewrites HTTPS→SSH, the `[patch]` git fetch
+needs `CARGO_NET_GIT_FETCH_WITH_CLI=true` (set in `.cargo/config.toml`).
+
 ## Architecture
 
 - `src/lib.rs` — crate root. The core types: `LPModelBuilder<Brand>`,

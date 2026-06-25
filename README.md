@@ -15,7 +15,12 @@ The crate selects backends through Cargo features:
 
 - `coin_cbc` (default) — COIN-OR CBC. Requires the CBC system library
   (`brew install coin-or-tools/coinor/cbc`, `apt install coinor-libcbc-dev`).
-- `gurobi` — Gurobi. Requires a Gurobi installation and a valid licence.
+- `gurobi` — Gurobi, via the [`grb`](https://crates.io/crates/grb) 3.x bindings (modern Gurobi
+  10/11/12; the `gurobi12` binding also links against Gurobi 13). Requires a Gurobi installation
+  and a valid licence. The build locates Gurobi through `GUROBI_HOME`, falling back to `gurobi_cl`
+  on `PATH`. On macOS, `grb-sys2` cannot infer the `.dylib` library name; set `GUROBI_LIBNAME`
+  (e.g. `gurobi120`) — or build this repo, which pins a patched `grb-sys2` that detects it
+  automatically.
 
 At least one backend feature must be enabled.
 
