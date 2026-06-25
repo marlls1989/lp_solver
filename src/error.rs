@@ -162,7 +162,7 @@ pub enum SolveError {
     NoSolution(NoSolution),
     /// The Gurobi backend returned an error.
     #[cfg(feature = "gurobi")]
-    Gurobi(::gurobi::Error),
+    Gurobi(::grb::Error),
 }
 
 impl fmt::Display for SolveError {
@@ -208,8 +208,8 @@ impl From<NoSolution> for SolveError {
 }
 
 #[cfg(feature = "gurobi")]
-impl From<::gurobi::Error> for SolveError {
-    fn from(err: ::gurobi::Error) -> Self {
+impl From<::grb::Error> for SolveError {
+    fn from(err: ::grb::Error) -> Self {
         SolveError::Gurobi(err)
     }
 }

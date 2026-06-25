@@ -1,0 +1,6 @@
+# The `gurobi` feature pins a patched `grb-sys2` via a `[patch.crates-io]` git
+# dependency (see Cargo.toml). Fetch git dependencies with the `git` CLI so that
+# a global `url.<ssh>.insteadOf` rewrite and the user's existing SSH credentials
+# are honoured; cargo's built-in libgit2 transport cannot use them.
+[net]
+git-fetch-with-cli = true
